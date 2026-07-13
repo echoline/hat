@@ -36,14 +36,28 @@ char *hatpath = NULL;
 static obs_properties_t *hat_source_properties(void *data);
 static struct obs_source_frame *hat_filter_video(void *data, struct obs_source_frame *frame);
 
+void* hat_create(obs_data_t *settings, obs_source_t *context) {
+	obs_data_set_default_string(settings, "haar", "/usr/share/opencv4/haarcascades/haarcascade_frontalface_alt_tree.xml");
+
+	return (void*)context;
+}
+
+void hat_update(void *data, obs_data_t *settings) {
+	(void)data;
+
+	classifierpath = (char*)obs_data_get_string(settings, "haar");
+	hatpath = (char*)obs_data_get_string(settings, "hat");
+}
+
 struct obs_source_info hat_frame_filter_info = {
 	.id	   	= "hat_frame_filter",
 	.type	 	= OBS_SOURCE_TYPE_FILTER,
 	.output_flags	= OBS_SOURCE_VIDEO | OBS_SOURCE_ASYNC,
 	.get_name	= [](void*) { return "Hat Frame Filter"; },
-	.create	   	= [](obs_data_t *settings, obs_source_t *context) { (void)settings; return (void*)context; },
+	.create	   	= hat_create,
 	.destroy	= [](void *data) { (void)data; },
 	.get_properties	= hat_source_properties,
+	.update         = hat_update,
 	.filter_video 	= hat_filter_video,
 };
 
@@ -57,7 +71,7 @@ void putHatOn(cv::Mat &frame)
 	std::vector<cv::Rect> faces;
 	static std::vector<cv::Rect> lastfaces;
 	static int lastfacescount = 0;
-	classifier.detectMultiScale(grayscale, faces, 1.01, 0, 0, cv::Size(150, 150), cv::Size());
+	classifier.detectMultiScale(grayscale, faces, 1.01, 1, 0, cv::Size(90, 90), cv::Size());
 	if (faces.size() == 0) {
 		lastfacescount++;
 		if (lastfacescount > 40)
@@ -86,57 +100,35 @@ void putHatOn(cv::Mat &frame)
 	lastfaces = faces;
 }
 
-std::string GetSourceText(const char* textName) {
-	obs_log(LOG_INFO, "GetSourceText 2");
-
-	obs_data_t* settings = obs_source_get_settings(NULL);
-
-	obs_log(LOG_INFO, "GetSourceText 3");
-
-	const char* textVal = obs_data_get_string(settings, textName);
-	std::string result = textVal ? textVal : "";
-
-	obs_log(LOG_INFO, "GetSourceText 4");
-
-	obs_data_release(settings);
-
-	obs_log(LOG_INFO, "GetSourceText 5");
-
-	return result;
-}
-
 static struct obs_source_frame *hat_filter_video(void *data, struct obs_source_frame *frame)
 {
 	// Access plane 0 (e.g., the Y channel in NV12 or the entire buffer in RGBA)
 	uint8_t *pixel_data = frame->data[0];
 	uint32_t stride = frame->linesize[0];
+	static bool loaded;
 
 	(void)data;
 
-	if (hatpath == NULL) {
-		std::string string = GetSourceText("hat");
-		if (string.length() > 0)
-			hatpath = strdup(string.c_str());
-		else
-			hatpath = strdup("/home/eli/sombrero.png");
-		obs_log(LOG_INFO, "hat image path: %s", hatpath);
-	}
-
-	if (classifierpath == NULL) {
-		std::string string = GetSourceText("haar");
-		if (string.length() > 0)
-			classifierpath = strdup(string.c_str());
-		else
-			classifierpath = strdup("/usr/share/opencv4/haarcascades/haarcascade_frontalface_alt_tree.xml");
-		obs_log(LOG_INFO, "classifier path: %s", classifierpath);
-	}
-
 	if (hatpath != NULL) {
 		hat = cv::imread(hatpath);
+
+		hatpath = NULL;
+
+		if (!hat.data) {
+			return frame;
+		}
 	}
 
 	if (classifierpath != NULL) {
-		classifier.load(classifierpath);
+		loaded = classifier.load(classifierpath);
+
+		obs_log(LOG_INFO, "classifier.load: %s - %s", classifierpath, loaded? "success": "failure");
+
+		classifierpath = NULL;
+
+		if (loaded == false) {
+			return frame;
+		}
 	}
 
 	cv::Mat cvmat(frame->height * 2, frame->width * 3, CV_8UC3, cv::Scalar(0,0,0));
@@ -150,7 +142,7 @@ static struct obs_source_frame *hat_filter_video(void *data, struct obs_source_f
 		}
 	}
 
-	if (hatpath != NULL && classifierpath != NULL)
+	if (hat.data != NULL && loaded == true)
 		putHatOn(cvmat);
 
 	for (uint32_t y = 0; y < frame->height; y++) {
